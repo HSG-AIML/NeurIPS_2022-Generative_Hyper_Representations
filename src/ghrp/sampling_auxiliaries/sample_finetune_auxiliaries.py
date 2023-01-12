@@ -695,18 +695,6 @@ def plot_populations(
     print(f"load populations for plotting: 1/9")
     root_path = path_target_zoo.absolute().joinpath("zoo_testsplit.pt")
     dataset_baseline = torch.load(root_path)  # load pre-computed dataset
-    ## load dataset from population
-    # root_path.mkdir(exist_ok=True)  # to catch path_not_exist error
-    # dataset_baseline = PropertyDataset(
-    #     root=[
-    #         root_path,
-    #     ],
-    #     epoch_lst=list(range(0, 51)),
-    #     train_val_test="train",
-    #     ds_split=[0.7, 0.15, 0.15],
-    #     property_keys=property_keys,
-    #     verbosity=0,
-    # )
 
     # direct transfer
     print(f"load populations for plotting: 2/9")
@@ -1170,24 +1158,11 @@ def plot_populations(
         r"$S_{N}$": palette[8],  # yellow
         r"$S_{D30}$": palette[3],  # red
         r"$S_{D}$": palette[1],  # orange
-        r"$S_{U}$": "tab:blue",  # grey
-        r"$S_{C}$": "tab:cyan",  # brown
+        r"$S_{U}$": "tab:blue",
+        r"$S_{C}$": "tab:cyan",
         r"$S_{G}$": palette[7],  # grey
         r"$S_{G30}$": palette[7],  # grey
     }
-    #     color_palette_update = {
-    #             r"$B_{F}$":           palette[0], #blue
-    #             r"$B_{T}$":           palette[2], #green
-    #             r"$S_{Neigh30}$":         palette[4], #purple
-    #             r"$S_{Neigh}$":           palette[8], #yellow
-    #             r"$S_{KDE30}$":         palette[3], #red
-    #             r"$S_{KDE}$":           palette[1], #orange
-    #             r"$S_{U}$":           "tab:blue", #brown
-    #             r"$S_{C}$":           "tab:cyan", #brown
-    #             r"$S_{GAN}$":         palette[5], #brown
-    #             r"$S_{GAN30}$":       palette[7], #grey
-    # #             r"$\hat{B}_{F}$: reconstruction of $B_F$": "y",
-    # }
 
     ### plots
     fig_path = population_path.joinpath("figures")

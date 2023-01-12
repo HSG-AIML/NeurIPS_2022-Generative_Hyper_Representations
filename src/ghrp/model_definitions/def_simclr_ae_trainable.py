@@ -8,7 +8,7 @@ import json
 # print(f"sys path in experiment: {sys.path}")
 from pathlib import Path
 
-import checkpoints_to_datasets
+import ghrp.checkpoints_to_datasets
 
 # import model_definitions
 from ghrp.model_definitions.def_simclr_ae_module import SimCLRAEModule
@@ -25,6 +25,16 @@ from ghrp.model_definitions.downstream_tasks.def_downstream_module import (
 # define Tune Trainable
 ###############################################################################
 class SimCLR_AE_tune_trainable(Trainable):
+    """
+    This is the trainer class for hyper-representations. It relies on ray.tune and implements
+    - setup: load data, model, initialize training setup
+    - step: take one training step
+    - save_checkpoint
+    - load_checkpoint
+
+    The model itself is implemented in 'def_simclr_ae_module.py'
+    """
+
     def setup(self, config, data=None):
         # test sys_path
         # set trainable properties
@@ -32,10 +42,11 @@ class SimCLR_AE_tune_trainable(Trainable):
         self.seed = config["seed"]
         self.device = config["device"]
 
-        # set
+        # set loss weights before anything else
         self.set_loss_weights()
 
-        # figure out how much of the GPU to wait for
+        #### GPU Resources
+        #  figure out how much of the GPU to wait for
         resources = config.get("resources", None)
         if resources is not None:
             gpu_resource_share = resources["gpu"]
@@ -52,6 +63,7 @@ class SimCLR_AE_tune_trainable(Trainable):
             print("cuda detected: wait for gpu memory to be available")
             wait_for_gpu(gpu_id=None, target_util=target_util, retry=20, delay_s=5)
 
+        ### get nidek cibfug
         # load config if restore from previous checkpoint
         if config.get("model::checkpoint_path", None):
             config_path = config.get("model::checkpoint_path", None).joinpath(
@@ -66,7 +78,7 @@ class SimCLR_AE_tune_trainable(Trainable):
                 if "model::" in key:
                     self.config[key] = config_old[key]
 
-        # init model
+        #### MODEL
         if config.get("model::type", None) is None:
             # infer model type
             if self.config.get("model::encoding", None) is not None:
@@ -80,7 +92,7 @@ class SimCLR_AE_tune_trainable(Trainable):
                 lr_factor = self.config.get("optim::vanilla_lr_factor", 1)
                 self.config["optim::lr"] = self.config["optim::lr"] * lr_factor
 
-        # get latent_dim
+        ## get latent_dim (if not set explicitly)
         if not self.config.get("model::latent_dim", None):
             # infer latent dim
             self.config["model::latent_dim"] = (
@@ -96,7 +108,7 @@ class SimCLR_AE_tune_trainable(Trainable):
         # init model
         self.SimCLR = SimCLRAEModule(self.config)
 
-        # load checkpoint
+        # load checkpoint if restart
         if config.get("model::checkpoint_path", None):
             print(
                 f'restore model state from {config.get("model::checkpoint_path",None)}'
@@ -106,9 +118,8 @@ class SimCLR_AE_tune_trainable(Trainable):
             # reset optimizer
             self.SimCLR.set_optimizer(config)
 
-        # init dataloaders
-        # get set self.config
-        # load dataset from file
+        #### DATA
+        # get dataset, either as argument or from file
         if data is not None:
             dataset = data
         else:
@@ -118,7 +129,7 @@ class SimCLR_AE_tune_trainable(Trainable):
         self.testset = dataset["testset"]
         self.valset = dataset.get("valset", None)
 
-        # set noise
+        # set noise augmentation
         self.trainset.add_noise_input = self.config.get(
             "trainset::add_noise_input", 0.0
         )
@@ -129,15 +140,15 @@ class SimCLR_AE_tune_trainable(Trainable):
         self.testset.add_noise_output = self.config.get(
             "testset::add_noise_output", 0.0
         )
-        # set permutations
+        # set permutation augmentation
         self.trainset.permutations_number = self.config["trainset::permutations_number"]
         self.testset.permutations_number = self.config["testset::permutations_number"]
 
-        # set erase
+        # set erase augmentation
         self.trainset.set_erase(self.config.get("trainset::erase_augment", None))
         self.testset.set_erase(self.config.get("testset::erase_augment", None))
 
-        # get full dataset in tensors
+        # dataloaders
         self.trainloader = DataLoader(
             self.trainset,
             batch_size=self.config["trainset::batchsize"],
@@ -146,7 +157,7 @@ class SimCLR_AE_tune_trainable(Trainable):
             num_workers=self.config.get("trainloader::workers", 2),
         )
 
-        # get full dataset in tensors
+        # dataloaders
         self.testloader = torch.utils.data.DataLoader(
             self.testset,
             batch_size=self.config["trainset::batchsize"],
@@ -155,7 +166,7 @@ class SimCLR_AE_tune_trainable(Trainable):
             num_workers=self.config.get("testloader::workers", 2),
         )
         if self.valset is not None:
-            # get full dataset in tensors
+            # dataloaders
             self.valloader = torch.utils.data.DataLoader(
                 self.valset,
                 batch_size=self.config["trainset::batchsize"],
@@ -164,29 +175,29 @@ class SimCLR_AE_tune_trainable(Trainable):
                 num_workers=self.config.get("testloader::workers", 2),
             )
 
-        # set normalization
+        # set loss normalization (layer-wise loss norm init)
         if self.config.get("training::normalize_loss", False):
             weights_train = self.trainset.__get_weights__()
             index_dict = self.config["model::index_dict"]
             self.SimCLR.set_normalization(weights_train, index_dict)
 
-        # set normalization
+        # set feature normalization (end to end)
         if self.config.get("model::feature_normalization", False):
             weights_train = self.trainset.__get_weights__()
             index_dict = self.config["model::index_dict"]
             self.SimCLR.set_feature_normalization(weights_train, index_dict)
 
-        # compute loss_mean
+        # compute loss_mean (for R^2 computation)
         weights_train = self.trainset.__get_weights__()
         self.SimCLR.criterion.set_mean_loss(weights_train)
 
         # save initial checkpoint
-        # self.save()
+        # self.save() #breaks since ray.__version__ = 1.8.1
 
-        # run first test epoch and log results
+        # run first test epoch and log results, this logs epoch=0, state before training
         self._iteration = -1
 
-        # DownstreamTask Learners
+        #### Initialize linear probes for downstream tasks
         if self.trainset.properties is not None:
             print(
                 "Found properties in dataset - downstream tasks are going to be evaluated at test time."
@@ -196,7 +207,7 @@ class SimCLR_AE_tune_trainable(Trainable):
             print("No properties found in dataset - skip downstream tasks.")
             self.dstk = None
 
-        # print model summary
+        ### Save Model Summary for later / parameter count comparison
         try:
             print(f"generate model summary")
             import pytorch_model_summary as pms
@@ -219,6 +230,9 @@ class SimCLR_AE_tune_trainable(Trainable):
 
     # step ####
     def step(self):
+        """
+        The step function performs n training epochs, one test epoch, one val epoch and computes the downstreamtask performance
+        """
         # set model to eval mode as default
         self.SimCLR.model.eval()
 
@@ -285,6 +299,9 @@ class SimCLR_AE_tune_trainable(Trainable):
     def set_loss_weights(
         self,
     ):
+        """
+        helper function to set weights for loss per layers
+        """
         index_dict = self.config["model::index_dict"]
         weights = []
         for idx, layer in enumerate(index_dict["layer"]):

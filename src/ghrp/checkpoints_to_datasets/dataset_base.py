@@ -24,7 +24,7 @@ from ghrp.checkpoints_to_datasets.progress_bar import ProgressBar
 class ModelDatasetBase(Dataset):
     """
     This dataset class loads checkpoints from path, stores them in the memory
-    It considers different task, but does not implement the __getitem__ function or any augmentation
+    It considers different dataset types for different tasks, but does not implement the __getitem__ function or any augmentation
     """
 
     ## class arguments
@@ -32,20 +32,26 @@ class ModelDatasetBase(Dataset):
     # init
     def __init__(
         self,
-        root,
-        layer_lst=[(0, "conv2d"), (3, "conv2d"), (6, "fc")],
-        epoch_lst=10,
-        mode="checkpoint",
+        root,  # path from which to load the dataset
+        layer_lst=[
+            (0, "conv2d"),
+            (3, "conv2d"),
+            (6, "fc"),
+        ],  # details on model composition, depends on model checkpoints
+        epoch_lst=10,  # list of epochs to load
+        mode="checkpoint",  # whether to load model checkpoints
         task="reconstruction",  # "reconstruction" (x->x), "sequence_prediction" (x^i -> x^i+1),
-        use_bias=False,
-        train_val_test="train",  # determines whcih dataset split to use
-        ds_split=[0.7, 0.3],  #
-        max_samples=None,
-        weight_threshold=float("inf"),
-        filter_function=None,  # gets sample path as argument and returns True if model needs to be filtered out
-        property_keys=None,
+        use_bias=False,  # set wheter to load weights or weights and biases
+        train_val_test="train",  # determines wich dataset split to use
+        ds_split=[0.7, 0.3],  # sets ration between [train, test] or [train, val, test]
+        max_samples=None,  # maximum number of samples
+        weight_threshold=float(
+            "inf"
+        ),  # set weight threshold. samples are filtered out if one weight has higher absolute value
+        filter_function=None,  # optional: pass function to filter out models. function gets sample path as argument and returns True if model needs to be filtered out
+        property_keys=None,  # keys of properties to load
         num_threads=4,
-        shuffle_path=True,
+        shuffle_path=True,  # whether to shuffle the root path before splitting in train / val / test
         verbosity=0,
     ):
         self.layer_lst = layer_lst
@@ -58,7 +64,6 @@ class ModelDatasetBase(Dataset):
         self.property_keys = copy.deepcopy(property_keys)
         self.train_val_test = train_val_test
         self.ds_split = ds_split
-        # self.filter_function = filter_function
 
         ### prepare directories and path list ################################################################
 
@@ -216,6 +221,8 @@ class ModelDatasetBase(Dataset):
                 f"Data loaded. found {len(self.data_in)} usable samples out of potential {len(self.path_list * len(eldx_lst))} samples."
             )
 
+        ### load model properties #############################################################################################
+
         if self.property_keys is not None:
             if self.verbosity > 2:
                 print(f"Load properties for samples from paths.")
@@ -256,6 +263,7 @@ class ModelDatasetBase(Dataset):
 
     ### get_weights ##################################################################################################################################################################
     def __get_weights__(self):
+        """returns the weights of all models as tensor"""
         if self.mode == "checkpoint":
             self.vectorize_data()
         else:
@@ -264,6 +272,7 @@ class ModelDatasetBase(Dataset):
 
     ## read properties from path ##############################################################################################################################################
     def read_properties(self, results_key_list, config_key_list, idx_offset=1):
+        """loads the performance metrics with keys in results_key_list and configurations with keys in config_key_list and returns dict"""
         # copy results_key_list to prevent kickback of delete to upstream function
         results_key_list = [key for key in results_key_list]
         # init dict
@@ -307,7 +316,9 @@ class ModelDatasetBase(Dataset):
                     )
         self.properties = properties
 
+    ## vectorize weights in checkpoiont ##############################################################################################################################################
     def vectorize_data(self):
+        """function loads checkpoint and vectorizes all weights (and biases)"""
         # save base checkpoint
         self.checkpoint_base = self.data_in[0]
         # iterate over length of dataset
@@ -358,6 +369,11 @@ def load_checkpoints_remote(
     verbosity,
     pba,
 ):
+    """
+    remote / ray function to load a single model checkpoint
+    this function also checks if a sample is valid (i.e. no NaN values, no abs(weights) >threshold, etc.)
+    returns: weights_in, labels_in, weights_out, labels_out, path, epoch
+    """
     ## get full path to files ################################################################
     chkpth = path.joinpath(f"checkpoint_{edx}", "checkpoints")
     ## load checkpoint #######################################################################

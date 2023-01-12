@@ -17,10 +17,14 @@ from einops import repeat
 
 
 class EncoderTransformer(nn.Module):
+    """
+    Encoder Transformer
+    """
+
     def __init__(self, config):
         super(EncoderTransformer, self).__init__()
 
-        # def __init__(self, input_dim, embed_dim, N, heads, max_seq_len, dropout, d_ff):
+        # get config
         self.N = config["model::N_attention_blocks"]
         self.input_dim = config["model::i_dim"]
         self.embed_dim = config["model::dim_attention_embedding"]
@@ -30,9 +34,7 @@ class EncoderTransformer(nn.Module):
         self.d_ff = config["model::attention_hidden_dim"]
         self.latent_dim = config["model::latent_dim"]
         self.device = config["device"]
-        self.compression = config.get(
-            "model::compression", "linear"
-        )  # "linear","token","average"
+        self.compression = config.get("model::compression", "linear")
         # catch deprecated stuff.
         compression_token = config.get("model::compression_token", "NA")
         if not compression_token == "NA":
@@ -42,18 +44,16 @@ class EncoderTransformer(nn.Module):
                 self.compression == "linear"
 
         print(f"init attn encoder")
-        # token embeddings
+
+        ### get token embeddings / config
         if config.get("model::encoding", "weight") == "weight":
             # encode each weight separately
             self.max_seq_len = self.input_dim
             self.token_embeddings = Embedder(self.input_dim, self.embed_dim)
         elif config.get("model::encoding", "weight") == "neuron":
             # encode weights of one neuron together
-            if config.get("model::index_dict", None) is None:
-                self.max_seq_len = 9
-                self.token_embeddings = EmbedderNeuronGroup(self.embed_dim)
-            # attn embedder
-            elif config.get("model::encoder") == "attn":
+            if config.get("model::encoder") == "attn":
+                # use attn embedder (attn of tokens for individual weights)
                 print("## attention encoder -- use index_dict")
                 index_dict = config.get("model::index_dict", None)
                 d_embed = config.get("model::attn_embedder_dim")
@@ -65,8 +65,8 @@ class EncoderTransformer(nn.Module):
                     n_heads=n_heads,
                 )
                 self.max_seq_len = self.token_embeddings.__len__()
-
             else:
+                # encode weights of a neuron linearly
                 print("## encoder -- use index_dict")
                 index_dict = config.get("model::index_dict", None)
                 self.token_embeddings = EmbedderNeuronGroup_index(
@@ -74,19 +74,21 @@ class EncoderTransformer(nn.Module):
                 )
                 self.max_seq_len = self.token_embeddings.__len__()
         elif config.get("model::encoding", "weight") == "neuron_in_out":
+            # embed ingoing + outgoing weights together
             index_dict = config.get("model::index_dict", None)
             self.token_embeddings = EmbedderNeuron(index_dict, self.embed_dim)
             self.max_seq_len = self.token_embeddings.__len__()
 
-        # compression token embedding
+        ### set compression token embedding
         if self.compression == "token":
             self.comp_token = nn.Parameter(torch.randn(1, 1, self.embed_dim))
             # add sequence length of 1
             self.max_seq_len += 1
 
-        # get learned position embedding
+        #### get learned position embedding
         self.position_embeddings = nn.Embedding(self.max_seq_len, self.embed_dim)
 
+        ### compose transformer layers
         self.transformer_type = config.get("model::transformer_type", "pol")
         if self.transformer_type == "pol":
             self.layers = get_clones(
@@ -114,14 +116,14 @@ class EncoderTransformer(nn.Module):
                 encoder_layer=encoder_layer, num_layers=self.N, norm=tra_norm
             )
 
-        # fc to map to latent space
+        ### mapping from tranformer output to latent space
+        # full, average, or compression token
         bottleneck = config.get("model::bottleneck", "linear")
-        # compute input dimension to bottlneck
         if self.compression == "token" or self.compression == "average":
             bottleneck_input = self.embed_dim
         else:  # self.compression=="linear"
             bottleneck_input = self.embed_dim * self.max_seq_len
-
+        # get mapping: linear, linear bounded (with tanh) or mlp
         if bottleneck == "linear":
             self.vec2neck = nn.Sequential(nn.Linear(bottleneck_input, self.latent_dim))
         elif bottleneck == "linear_bounded":
@@ -145,6 +147,9 @@ class EncoderTransformer(nn.Module):
             self.vec2neck = Encoder(config_mlp)
 
     def forward(self, x, mask=None):
+        """
+        forward function: get token embeddings, add position encodings, pass through transformer, map to bottleneck
+        """
         attn_scores = []  # not yet implemented, to prep interface
         # embedd weights
         x = self.token_embeddings(x)

@@ -38,29 +38,31 @@ class SimCLRDataset(ModelDatasetBase):
     # init
     def __init__(
         self,
-        root,
-        layer_lst=[(0, "conv2d"), (3, "conv2d"), (6, "fc")],
-        epoch_lst=10,
-        mode="vectorize",  # "vector", "vectorize", "checkpoint"
-        # permute_type="pair",  # "single", ("map_to_canonical", 0) None
-        # task="reconstruction",  # "reconstruction" (x->x), "sequence_prediction" (x^i -> x^i+1),
-        permutations_number=10,
-        permute_layers=[0, 2],
-        permutation_mode="complete",  # "random"
-        view_1_canonical=False,
-        view_2_canonical=False,
-        map_2_canon_metric="absolute",
-        add_noise_input=[False],  # [('input', 0.15), ('output', 0.013)]
-        add_noise_output=[False],  # [('input', 0.15), ('output', 0.013)]
-        erase_augment=None,  # {"p": 0.5,"scale":(0.02,0.33),"value":0,"mode":"block"}
+        root,  # path from which to load the dataset
+        layer_lst=[
+            (0, "conv2d"),
+            (3, "conv2d"),
+            (6, "fc"),
+        ],  # details on model composition, depends on model checkpoints
+        epoch_lst=10,  # list of epochs to load
+        mode="vectorize",  # "vector", "vectorize", "checkpoint" | vector: models are vectorized at init. vectorize: models are vectorized at __getitem__
+        permutations_number=10, # number of precomputed permutations
+        permute_layers=[0, 2], # layers to permute
+        permutation_mode="complete",  # "random" # permute mode. caution: 'complete' becomes intractable quickly...
+        view_1_canonical=False, # maps view1 to 'canoncial representation'
+        view_2_canonical=False, # maps view2 to 'canoncial representation'
+        map_2_canon_metric="absolute", # metric for canoncial represnetation
+        add_noise_input=[False],  # set level of noise augmentatino 0.15
+        add_noise_output=[False],  # 0.15
+        erase_augment=None,  # set erasing augmentation parameters {"p": 0.5,"scale":(0.02,0.33),"value":0,"mode":"block"}
         erase_input=None,  # use this to catch wrong parameters
-        use_bias=False,
-        train_val_test="train",
-        ds_split=[0.7, 0.3],
-        weight_threshold=float("inf"),
+        use_bias=False, # set whether to load  model biases as well
+        train_val_test="train", # set dataset split
+        ds_split=[0.7, 0.3], # sets ration between [train, test] or [train, val, test]
+        weight_threshold=float("inf"), # set weight threshold. samples are filtered out if one weight has higher absolute value
         max_samples=None,  # limit the number of models to integer number (full model trajectory, all epochs)
         filter_function=None,  # gets sample path as argument and returns True if model needs to be filtered out
-        property_keys=None,
+        property_keys=None, # keys of properties to load
         num_threads=4,
         verbosity=0,
     ):
@@ -128,25 +130,22 @@ class SimCLRDataset(ModelDatasetBase):
 
     ## getitem ####################################################################################################################################################################
     def __getitem__(self, index):
-
+        """function call differs depending on self.mode"""
         # get permutation index -> pick random number from available perms
         if self.permutations_number > 0:
             perm_idx, perm_jdx = random.choices(
                 list(range(self.permutations_number)), k=2
             )
 
-        ## mode "vector has different workflow"
+        ## mode "vector": data_in is alrady a tensor. Augmentations are pre-computed and can be cheaply applied
         if self.mode == "vector":
             # get raw data
             ddx_in = self.data_in[index]
             ddx_in = copy.deepcopy(ddx_in)
             label_in = self.labels_in[index]
             label_in = copy.deepcopy(label_in)
-            # ddx_out = copy.deepcopy(self.data_out[index])
-            # label_out = copy.deepcopy(self.labels_out[index])
 
             # permutation
-            # permute data idx
             if self.view_1_canonical:
                 ddx_in_idx = self.data_canon[index]
                 ddx_in_idx = copy.deepcopy(ddx_in_idx)
@@ -201,6 +200,8 @@ class SimCLRDataset(ModelDatasetBase):
 
             return ddx_in_idx, label_in_idx, ddx_in_jdx, label_in_jdx
         ### end mode=="vector"
+
+        ### else: either mode vectorize, or mode checkpoint. Both cases: augmentations are applied on checkpoint
 
         # view 1
         if self.view_1_canonical:
@@ -417,6 +418,9 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### get permutation map #########################################################################################################################################################
     def get_permutation_map(self):
+        """
+        pre-computes permutations for all layers by iterating over the layers.
+        """
         # Mode 1: precompute all permutations
         if self.permutation_mode == "complete":
             combination_lst = []
@@ -468,6 +472,9 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### permute_single_sample #########################################################################################################################################################
     def permute_single_sample(self, chkpt_in, lab_in, chkpt_out, lab_out, pdx):
+        """
+        perform permutation on one checkpoint
+        """
         ## perform actual permutation ################
         # adapt label with permutation index
         lab_in_p = f"{lab_in}#_#per_{pdx}"
@@ -495,6 +502,9 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### set erase ############################################################
     def set_erase(self, erase=None):
+        """
+        helper function to set the erase augmentation
+        """
         if erase is not None:
             assert (
                 self.mode == "vectorize" or self.mode == "vector"
@@ -511,6 +521,9 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### vectorize_data #########################################################################################################################################################
     def vectorize_data(self):
+        """
+        helper function to vectorize weight of all checkpoints in data_in
+        """
         # save base checkpoint
         self.checkpoint_base = self.data_in[0]
         # iterate over length of dataset
@@ -535,6 +548,12 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### precompute_permutation_index #########################################################################################################################################################
     def precompute_permutation_index(self):
+        """
+        main function to pre-compute permutations. 
+        Idea: fill checkpoint with 0-based indices (index_vector)
+        Apply all permutations on that checkpoint.
+        vectorize 'weights'/indices to get permuted indices
+        """
         # ASSUMES THAT DATA IS ALREADY VECTORIZED
         permutation_index_list = []
         # create index vector
@@ -589,6 +608,9 @@ class SimCLRDataset(ModelDatasetBase):
 
     ### map data to canoncial #############################################################################################
     def map_data_to_canonical(self):
+        """
+        map data to canonical representation
+        """
         data_canon = []
 
         ## init multiprocessing environment ############
@@ -620,6 +642,9 @@ class SimCLRDataset(ModelDatasetBase):
 def compute_single_canon_form(
     checkpoint, layer_lst, permute_layers, map_2_canon_metric, pba
 ):
+    """
+    helper function to compute a single canonical form
+    """
     checkpoint_canon, _ = sort_layers_checkpoint(
         checkpoint,
         layer_lst=layer_lst,
@@ -639,6 +664,9 @@ def compute_single_canon_form(
 def compute_single_index_vector_remote(
     index_checkpoint, prmt_dct, layer_lst, permute_layers, use_bias, pba
 ):
+    """
+    ray helper function for parallelization
+    """
     # apply permutation on copy of unit checkpoint
     chkpt_p = permute_checkpoint(
         index_checkpoint,

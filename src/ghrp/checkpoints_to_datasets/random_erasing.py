@@ -7,9 +7,9 @@ import warnings
 
 
 class RandomErasingVector(torch.nn.Module):
-    """ 
+    """
     Inspired by: https://pytorch.org/docs/stable/_modules/torchvision/transforms/transforms.html#RandomErasing
-    Randomly selects a rectangle region in an image and erases its pixels.
+    Randomly selects a 'rectangle' region in a weight vector and erases its pixels.
     'Random Erasing Data Augmentation' by Zhong et al. See https://arxiv.org/abs/1708.04896
 
     Args:
@@ -52,7 +52,9 @@ class RandomErasingVector(torch.nn.Module):
 
     @staticmethod
     def erase_vector_block(
-        vector: Tensor, scale: Tuple[float, float], value: Optional[List[float]] = None,
+        vector: Tensor,
+        scale: Tuple[float, float],
+        value: Optional[List[float]] = None,
     ) -> Tensor:
         """Get parameters for ``erase`` for a random erasing.
 

@@ -19,6 +19,9 @@ class NT_Xent(nn.Module):
     def __init__(
         self, batch_size, temperature, device, projection_head=False, config=None
     ):
+        """
+        Implements normalized temperature-controlled Cross Entropy Loss
+        """
         super(NT_Xent, self).__init__()
         self.batch_size = batch_size
         self.temperature = temperature
@@ -83,6 +86,9 @@ class NT_Xent_pos(nn.Module):
     def __init__(
         self, batch_size, temperature, device, projection_head=False, config=None
     ):
+        """
+        Implements postive contrast version of normalized temperature-controlled Cross Entropy Loss
+        """
         super(NT_Xent_pos, self).__init__()
         self.batch_size = batch_size
         self.temperature = temperature
@@ -147,6 +153,10 @@ class NT_Xent_pos(nn.Module):
 # reconstruction loss
 ################################################################################################
 class ReconLoss(nn.Module):
+    """
+    Regular MSE w/ normalization
+    """
+
     def __init__(self, reduction, normalization_var=None):
         super(ReconLoss, self).__init__()
         self.criterion = nn.MSELoss(reduction=reduction)
@@ -161,12 +171,14 @@ class ReconLoss(nn.Module):
             output /= self.normalization_var
             target /= self.normalization_var
         loss = self.criterion(output, target)
+        # init rsq
         rsq = -999
         if self.loss_mean:
             rsq = torch.tensor(1 - loss.item() / self.loss_mean)
         return {"loss_recon": loss, "rsq": rsq}
 
     def set_normalization(self, reference_weights, index_dict):
+        """set normalization koefficinet at init"""
         # compute variance of the weights __per layer__
         variances = []
         for start, length in zip(index_dict["idx_start"], index_dict["idx_length"]):
@@ -197,7 +209,7 @@ class ReconLoss(nn.Module):
 
 class MSELossClipped(nn.Module):
     """
-    implementation of error clipping
+    implementation of MSE with error clipping
     thresholds the error term of MSE loss at value threshold.
     Idea: limit maximum influence of data points with large error to prevent them from dominating the entire error term
     """
@@ -218,17 +230,18 @@ class MSELossClipped(nn.Module):
             error = -torch.nn.functional.threshold(
                 -error, -self.threshold, -self.threshold
             )
-        # if self.reduction == "sum":
         error = torch.sum(error)
         if self.reduction == "mean":
             nsamples = torch.numel(error)
-            # error = torch.sum(error) / nsamples
-            # error = error / nsamples
             error /= nsamples
         return error
 
 
 class LayerWiseReconLoss(nn.Module):
+    """
+    MSE w/ layer-wise normalization
+    """
+
     def __init__(self, reduction, index_dict, normalization_koeff=None, threshold=None):
         super(LayerWiseReconLoss, self).__init__()
         self.threshold = threshold
@@ -242,19 +255,26 @@ class LayerWiseReconLoss(nn.Module):
         self.loss_mean = None
 
     def forward(self, output, target):
+        # check validity
         assert (
             output.shape == target.shape
         ), f"MSE loss error: prediction and target don't have the same shape. output {output.shape} vs target {target.shape}"
+        # normalize outputs and targets
         if self.normalization_koeff is not None:
             dev = output.device
             self.normalization_koeff = self.normalization_koeff.to(dev)
             output = torch.clone(output) / self.normalization_koeff
             target = torch.clone(target) / self.normalization_koeff
+
+        # compute layer-wise loss / rsq
         out = {}
         loss = torch.tensor(0.0, device=output.device).float()
+        # iterate over layers
         for layer, idx_start, idx_end, loss_weight_idx in self.layer_index:
+            # slice weight vector
             out_tmp = output[:, idx_start:idx_end]
             tar_tmp = target[:, idx_start:idx_end]
+            # compute loss
             loss_tmp = self.criterion(out_tmp, tar_tmp)
             # reduction
             if self.reduction == "global_mean":
@@ -265,15 +285,18 @@ class LayerWiseReconLoss(nn.Module):
                 loss_tmp /= output.shape[0] * out_tmp.shape[1]
             else:
                 raise NotImplementedError
-            #
+            # reweight with # of weights in this layer
             loss += loss_weight_idx * loss_tmp
             out[f"loss_recon_l{layer[0]}"] = loss_tmp.detach()
+            # if loss_mean exists: compute rsq for this layer
             if self.loss_mean:
                 out[f"rsq_l{layer[0]}"] = torch.tensor(
                     1
                     - loss_tmp.item() / self.loss_mean[f"loss_recon_l{layer[0]}"].item()
                 )
+        # pass loss_recon to output
         out["loss_recon"] = loss
+        # of loss_mean exists: compute overall rsq
         if self.loss_mean:
             out["rsq"] = torch.tensor(
                 1 - loss.item() / self.loss_mean["loss_recon"].item()
@@ -281,6 +304,9 @@ class LayerWiseReconLoss(nn.Module):
         return out
 
     def get_index_idx(self, index_dict):
+        """
+        Helper function that creates a list of indeces per layer
+        """
         # compute variance of the weights __per layer__
         index = []
         layer_lst = index_dict["layer"]
@@ -296,10 +322,11 @@ class LayerWiseReconLoss(nn.Module):
             loss_weight = loss_weight_lst[idx]
             index.append((layer, idx_start, idx_end, loss_weight))
         self.layer_index = index
-        # print(f"compute loss over the following layers")
-        # print(self.layer_index)
 
     def set_normalization(self, reference_weights, index_dict):
+        """
+        Function to set the normaliztion coefficient per layer
+        """
         # compute std of the weights __per layer__
         norm_std = []
         for start, length in zip(index_dict["idx_start"], index_dict["idx_length"]):
@@ -322,6 +349,9 @@ class LayerWiseReconLoss(nn.Module):
         self.normalization_koeff = norm_std
 
     def set_mean_loss(self, weights: torch.Tensor):
+        """
+        Function to compute the loss w.r.t the mean weights for rsq computation
+        """
         # check that weights are tensor..
         assert isinstance(weights, torch.Tensor)
         w_mean = weights.mean(dim=0)  # compute over samples (dim0)
@@ -336,7 +366,7 @@ class LayerWiseReconLoss(nn.Module):
 
 
 ################################################################################################
-# reconstruction loss
+# KLD Loss for VAE
 ################################################################################################
 
 
@@ -434,9 +464,9 @@ class GammaContrastReconLoss(nn.Module):
         # threshold for error clipping
         self.threshold = threshold
 
-        # z_var penalty
+        # z_var penalty: l2 penalty on variance of embeddings
         self.z_var_penalty = z_var_penalty
-        # z_norm penalty
+        # z_norm penalty: l2 penalty on norm of embeddings
         self.z_norm_penalty = z_norm_penalty
 
         # set contrast
@@ -453,6 +483,7 @@ class GammaContrastReconLoss(nn.Module):
         else:
             print("unrecognized contrast - use reconstruction only")
 
+        # set reconstruction loss
         index_dict = config["model::index_dict"]
         self.loss_recon = LayerWiseReconLoss(
             reduction=reduction,
@@ -461,8 +492,10 @@ class GammaContrastReconLoss(nn.Module):
             threshold=threshold,
         )
 
+        # init loss_mean
         self.loss_mean = None
 
+    # set mean loss for rsq computation
     def set_mean_loss(self, weights: torch.Tensor):
         # call function of recon loss
         self.loss_recon.set_mean_loss(weights)
@@ -471,10 +504,11 @@ class GammaContrastReconLoss(nn.Module):
         self, z_i: torch.Tensor, z_j: torch.Tensor, y: torch.Tensor, t: torch.Tensor
     ) -> torch.Tensor:
         """
-        z_i, z_j are the two different views of the same batch encoded in the representation space. dim: batch_sizexrepresentation space
+        z_i, z_j are the two different views of the same batch encoded in the representation space. dim: batch_size x representation space
         y: reconstruction. dim: batch_sizexinput_size
         t: target dim: batch_sizexinput_size
         """
+        # case 1: only reconstruction
         if self.gamma < 1e-10:
             out_recon = self.loss_recon(y, t)
             out = {
@@ -485,6 +519,7 @@ class GammaContrastReconLoss(nn.Module):
             for key in out_recon.keys():
                 if key not in out:
                     out[key] = out_recon[key]
+        # case 2: only contrast
         elif abs(1.0 - self.gamma) < 1e-10:
             loss_contrast = self.loss_contrast(z_i, z_j)
             out = {
@@ -492,6 +527,7 @@ class GammaContrastReconLoss(nn.Module):
                 "loss_contrast": loss_contrast,
                 "loss_recon": torch.tensor(0.0),
             }
+        # case 3: contrast + reconstruction
         else:
             # combine loss components
             loss_contrast = self.loss_contrast(z_i, z_j)
@@ -507,14 +543,14 @@ class GammaContrastReconLoss(nn.Module):
             for key in out_recon.keys():
                 if key not in out:
                     out[key] = out_recon[key]
-                    # compute embedding properties
+
+        # compute embedding properties
         z_norm = torch.linalg.norm(z_i, ord=2, dim=1).mean()
         z_var = torch.mean(torch.var(z_i, dim=0))
         out["z_norm"] = z_norm
         out["z_var"] = z_var
-        # if self.z_var_penalty > 0:
+        # add var/norm penalty terms
         out["loss"] = out["loss"] + self.z_var_penalty * z_var
-        # if self.z_norm_penalty > 0:
         out["loss"] = out["loss"] + self.z_norm_penalty * z_norm
 
         return out

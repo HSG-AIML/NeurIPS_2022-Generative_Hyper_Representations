@@ -9,6 +9,12 @@ import itertools
 
 
 class SimCLRAEModule(nn.Module):
+    """
+    Main Hyper-Representation Model Class.
+    Implements forward, backwards pass, steps
+    Handles device, precision, normalization, etc.
+    """
+
     def __init__(self, config):
         super(SimCLRAEModule, self).__init__()
 
@@ -17,6 +23,7 @@ class SimCLRAEModule(nn.Module):
         if self.verbosity > 0:
             print("Initialize Model")
 
+        # set deivce
         self.device = config.get("device", torch.device("cpu"))
         if type(self.device) is not torch.device:
             self.device = torch.device(self.device)
@@ -33,6 +40,7 @@ class SimCLRAEModule(nn.Module):
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
 
+        # initialize backbone architecture
         self.type = config.get("model::type", "vanilla")
         if self.type == "vanilla":
             model = AE(config)
@@ -41,12 +49,13 @@ class SimCLRAEModule(nn.Module):
         elif self.type == "perceiver":
             model = AE_perceiver(config)
 
+        # initialize projection head (for contrastive learning)
         self.model = model
         projection_head = (
             True if config.get("model::projection_head_layers", None) > 0 else False
         )
 
-        #
+        # set loss combination of MSE and InfoNCE
         self.criterion = GammaContrastReconLoss(
             gamma=config.get("training::gamma", 0.5),
             reduction=config.get("training::reduction", "global_mean"),
@@ -59,6 +68,7 @@ class SimCLRAEModule(nn.Module):
             z_var_penalty=config.get("training::z_var_penalty", 0.0),
             config=config,
         )
+
         # send model and criterion to device
         self.model.to(self.device)
         self.criterion.to(self.device)
@@ -68,12 +78,12 @@ class SimCLRAEModule(nn.Module):
 
         # gather model parameters and projection head parameters
         # params_lst = [self.model.parameters(), self.criterion.parameters()]
-        # self.params = itertools.chain(*params_lst)
         self.params = self.parameters()
 
         # set optimizer
         self.set_optimizer(config)
 
+        ### precision
         # half precision
         self.use_half = (
             True if config.get("training::precision", "full") == "half" else False
@@ -91,19 +101,21 @@ class SimCLRAEModule(nn.Module):
             print(f"++++++ USE AUTOMATIC MIXED PRECISION +++++++")
             self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
-        # set trackers
+        # set trackers (deprecated)
         self.best_epoch = None
         self.loss_best = None
         self.best_checkpoint = None
 
-        # mean loss for r^2
+        # initialize mean loss for r^2
         self.loss_mean = None
 
-        # init scheduler
+        # initialize scheduler
         self.set_scheduler(config)
 
+        # initialize whether to save the checkpoint
         self._save_model_checkpoint = True
 
+        # initialize feature normalization coefficients
         self.feature_normalization_koeff = None
 
         # init gradien clipping
@@ -117,6 +129,9 @@ class SimCLRAEModule(nn.Module):
             self.clip_grads = None
 
     def set_feature_normalization(self, reference_weights, index_dict):
+        """
+        computes std of weights __per layer__ for end-to-end normalization
+        """
         # compute std of the weights __per layer__
         norm_std = []
         for start, length in zip(index_dict["idx_start"], index_dict["idx_length"]):
@@ -139,14 +154,12 @@ class SimCLRAEModule(nn.Module):
         self,
     ):
         # print(f"clip grads by norm")
-        # nn.utils.clip_grad_norm_(self.params, self.clipping_value)
         nn.utils.clip_grad_norm_(self.parameters(), self.clipping_value)
 
     def clip_grad_value(
         self,
     ):
         # print(f"clip grads by value")
-        # nn.utils.clip_grad_value_(self.params, self.clipping_value)
         nn.utils.clip_grad_value_(self.parameters(), self.clipping_value)
 
     def forward(self, x):
@@ -239,6 +252,9 @@ class SimCLRAEModule(nn.Module):
             )
 
     def set_normalization(self, reference_weights, index_dict):
+        """
+        sets normalization for layer-wise loss norm. get's passed on to criterion
+        """
         self.criterion.loss_recon.set_normalization(reference_weights, index_dict)
 
     def save_model(self, epoch, perf_dict, path=None):
@@ -280,8 +296,6 @@ class SimCLRAEModule(nn.Module):
             self.clip_grads()
         # update parameters
         self.optimizer.step()
-        # for key in perf.keys():
-        #     perf[key] = perf[key].item()
         # compute embedding properties
         z_norm = torch.linalg.norm(z_i, ord=2, dim=1).mean()
         z_var = torch.mean(torch.var(z_i, dim=0))
@@ -290,7 +304,7 @@ class SimCLRAEModule(nn.Module):
         return perf
 
     # ##########################
-    # one training step / batch
+    # one training step / batch with automatic mixed precision
     # ##########################
     def train_step_amp(self, x_i, x_j):
         with torch.cuda.amp.autocast(enabled=True):
@@ -319,8 +333,6 @@ class SimCLRAEModule(nn.Module):
         self.scaler.update()
         # zero grads
         self.optimizer.zero_grad()
-        # for key in perf.keys():
-        #     perf[key] = perf[key].item()
         # compute embedding properties
         z_norm = torch.linalg.norm(z_i, ord=2, dim=1).mean()
         z_var = torch.mean(torch.var(z_i, dim=0))
@@ -328,7 +340,9 @@ class SimCLRAEModule(nn.Module):
         perf["z_var"] = z_var
         return perf
 
-    # one training epoch
+    # ##########################
+    # one full training epoch
+    # ##########################
     def train_epoch(self, trainloader, epoch, writer=None, tf_out=10):
         if self.verbosity > 2:
             print(f"train epoch {epoch}")
@@ -381,15 +395,15 @@ class SimCLRAEModule(nn.Module):
         for key in perf_out.keys():
             perf_out[key] /= n_data
             perf_out[key] = perf_out[key].item()
-        # rsq_running = 1 - loss_running_recon / self.loss_mean
-
         # scheduler
         if self.scheduler is not None:
             self.scheduler.step(perf_out["loss"])
 
         return perf_out
 
-    # test batch
+    # ##########################
+    # one training step / batch
+    # ##########################
     def test_step(self, x_i, x_j):
         with torch.no_grad():
             if self.use_half:
@@ -402,11 +416,11 @@ class SimCLRAEModule(nn.Module):
             y = torch.cat([y_i, y_j], dim=0)
             # compute loss
             perf = self.criterion(z_i=z_i, z_j=z_j, y=y, t=x)
-            # for key in perf.keys():
-            #     perf[key] = perf[key].item()
             return perf
 
-    # test batch
+    # ##########################
+    # one training step / batch with automatic mixed precision
+    # ##########################
     def test_step_amp(self, x_i, x_j):
         with torch.no_grad():
             with torch.cuda.amp.autocast(enabled=True):
@@ -418,11 +432,11 @@ class SimCLRAEModule(nn.Module):
                 y = torch.cat([y_i, y_j], dim=0)
                 # compute loss
                 perf = self.criterion(z_i=z_i, z_j=z_j, y=y, t=x)
-            # for key in perf.keys():
-            #     perf[key] = perf[key].item()
             return perf
 
-    # test epoch
+    # ##########################
+    # one full test epoch
+    # ##########################
     def test_epoch(self, testloader, epoch, writer=None, tf_out=10):
         if self.verbosity > 2:
             print(f"test at epoch {epoch}")
@@ -457,113 +471,3 @@ class SimCLRAEModule(nn.Module):
             perf_out[key] = perf_out[key].item()
 
         return perf_out
-
-    # training loop over all epochs
-    def train_loop(self, config):
-        if self.verbosity > 0:
-            print("##### enter training loop ####")
-
-        # unpack training_config
-        epochs_train = config["training::epochs_train"]
-        start_epoch = config["training::start_epoch"]
-        output_epoch = config["training::output_epoch"]
-        test_epochs = config["training::test_epochs"]
-        tf_out = config["training::tf_out"]
-        checkpoint_dir = config["training::checkpoint_dir"]
-        tensorboard_dir = config["training::tensorboard_dir"]
-
-        if tensorboard_dir is not None:
-            tb_writer = SummaryWriter(log_dir=tensorboard_dir)
-        else:
-            tb_writer = None
-
-        # trainloaders with matching lenghts
-
-        trainloader = config["training::trainloader"]
-        testloader = config["training::testloader"]
-
-        ## compute loss_mean
-        self.loss_mean = self.criterion.compute_mean_loss(testloader)
-
-        # compute initial test loss
-        loss_test, loss_test_contr, loss_test_recon, rsq_test = self.test(
-            testloader,
-            epoch=0,
-            writer=tb_writer,
-            tf_out=tf_out,
-        )
-
-        # write first state_dict
-        perf_dict = {
-            "loss_train": 1e15,
-            "loss_test": loss_test,
-            "rsq_train": -999,
-            "rsq_test": rsq_test,
-        }
-
-        self.save_model(epoch=0, perf_dict=perf_dict, path=checkpoint_dir)
-        self.best_epoch = 0
-        self.loss_best = 1e15
-
-        # initialize the epochs list
-        epoch_iter = range(start_epoch, start_epoch + epochs_train)
-        # enter training loop
-        # for epoch in epoch_iter:
-
-        #     # enter training loop over all batches
-        #     loss_train, loss_train_contr, loss_train_recon, rsq_train = self.train(
-        #         trainloader, epoch, writer=tb_writer, tf_out=tf_out
-        #     )
-
-        #     if epoch % test_epochs == 0:
-        #         perf_test = self.test(
-        #             testloader,
-        #             epoch,
-        #             writer=tb_writer,
-        #             tf_out=tf_out,
-        #         )
-
-        #         if loss_test < self.loss_best:
-        #             self.best_epoch = epoch
-        #             self.loss_best = loss_test
-        #             self.best_checkpoint = self.model.state_dict()
-        #             perf_dict["epoch"] = epoch
-        #             perf_dict["loss_train"] = loss_train
-        #             perf_dict["loss_train_contr"] = loss_train_contr
-        #             perf_dict["loss_train_recon"] = loss_train_recon
-        #             perf_dict["rsq_train"] = rsq_train
-        #             perf_dict["loss_test"] = loss_test
-        #             perf_dict["loss_test_contr"] = loss_test_contr
-        #             perf_dict["loss_test_recon"] = loss_test_recon
-        #             perf_dict["rsq_test"] = rsq_test
-        #             if checkpoint_dir is not None:
-        #                 self.save_model(
-        #                     epoch="best", perf_dict=perf_dict, path=checkpoint_dir
-        #                 )
-        #         # if self.verbosity > 1:
-        #         # print(f"best loss: {self.loss_best} at epoch {self.best_epoch}")
-
-        #     if epoch % output_epoch == 0:
-        #         perf_dict["epoch"] = epoch
-        #         perf_dict["loss_train"] = loss_train
-        #         perf_dict["loss_train_contr"] = loss_train_contr
-        #         perf_dict["loss_train_recon"] = loss_train_recon
-        #         perf_dict["rsq_train"] = rsq_train
-        #         perf_dict["loss_test"] = loss_test
-        #         perf_dict["loss_test_contr"] = loss_test_contr
-        #         perf_dict["loss_test_recon"] = loss_test_recon
-        #         perf_dict["rsq_test"] = rsq_test
-        #         if checkpoint_dir is not None:
-        #             self.save_model(
-        #                 epoch=epoch, perf_dict=perf_dict, path=checkpoint_dir
-        #             )
-        #         if self.verbosity > 1:
-        #             print(
-        #                 f"epoch {epoch}:: train_loss = {loss_train}; train r**2 {rsq_train}; loss_train_contr: {loss_train_contr}; loss_train_recon: {loss_train_recon}"
-        #             )
-        #             print(
-        #                 f"epoch {epoch}:: test_loss = {loss_test}; test r**2 {rsq_test}; loss_test_contr: {loss_test_contr}; loss_test_recon: {loss_test_recon}"
-        #             )
-
-        self.last_checkpoint = self.model.state_dict()
-        return self.loss_best

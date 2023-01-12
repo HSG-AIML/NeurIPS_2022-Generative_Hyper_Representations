@@ -12,8 +12,8 @@ import tqdm
 
 class PropertyDataset(Dataset):
     """
-    This dataset class loads checkpoints from path, stores them in the memory
-    It considers different task, but does not implement the __getitem__ function or any augmentation
+    This dataset class loads model properties from path, and skips the actual checkpoints.
+    Interfaces with the same dataset.properties logic of the other datasets, but cheaper to laod and much smaller.
     """
 
     ## class arguments
@@ -21,11 +21,11 @@ class PropertyDataset(Dataset):
     # init
     def __init__(
         self,
-        root,
-        epoch_lst=[5, 10],
+        root,  # path from which to load the dataset
+        epoch_lst=[5, 10],  # list of epochs to load
         train_val_test="train",  # determines whcih dataset split to use
-        ds_split=[0.7, 0.3],  #
-        property_keys=None,
+        ds_split=[0.7, 0.3],  # sets ration between [train, test] or [train, val, test]
+        property_keys=None,  # keys of properties to load
         num_threads=4,
         verbosity=0,
     ):
@@ -34,7 +34,6 @@ class PropertyDataset(Dataset):
         self.property_keys = copy.deepcopy(property_keys)
         self.train_val_test = train_val_test
         self.ds_split = ds_split
-        # self.filter_function = filter_function
 
         ### prepare directories and path list ################################################################
 
@@ -138,6 +137,9 @@ class PropertyDataset(Dataset):
 
     ## read properties from path ##############################################################################################################################################
     def read_properties(self, results_key_list, config_key_list, idx_offset=1):
+        """
+        iterate over all paths in path_list and load the properties
+        """
         # init dict
         properties = {}
         for key in results_key_list:
