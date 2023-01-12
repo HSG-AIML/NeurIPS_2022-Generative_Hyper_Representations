@@ -2,7 +2,6 @@
 clear
 echo Downloading Hyper-Representations from https://zenodo.org/record/7529960/files/hyper_reps.zip?download=1
 
-
 curl -# -o "hyper_reps.zip" "https://zenodo.org/record/7529960/files/hyper_reps.zip?download=1"
 
 echo Unzipping hyper_reps
