@@ -8,7 +8,7 @@ Hyper-Representations as Generative Models: Sampling Unseen Neural Network Weigh
 ![Schematic overview over generative hyper-representations:](assets/schematic.png "Schematic overview of Generative Hyper-Representations")
 
 
-This repository contains code to reproduce the experiments from NeurIPS 2022 paper "Hyper-Representations as Generative Models: Sampling Unseen Neural Network Weights". The paper can be found [here](https://arxiv.org/abs/2209.14733).
+This repository contains code to reproduce the experiments from NeurIPS 2022 paper **"Hyper-Representations as Generative Models: Sampling Unseen Neural Network Weights"**. The paper can be found here: [NeurIPS website](https://proceedings.neurips.cc/paper_files/paper/2022/hash/b2c4b7d34b3d96b9dc12f7bce424b7ae-Abstract-Conference.html) or [arxiv](https://arxiv.org/abs/2209.14733).
 
 
 Paper Abstract
